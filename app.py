@@ -5,29 +5,21 @@ import pandas as pd
 st.set_page_config(
     page_title="Student Grade System",
     page_icon="🎓",
-    layout="wide"  # ใช้พื้นที่หน้าจอเต็มความกว้าง
+    layout="wide"
 )
 
 # --- ส่วนหัวของแอปพลิเคชัน ---
-st.title("🎓 Student Grade System")
-st.write("เวอร์ชันสุดท้าย: ระบบจัดการและวิเคราะห์คะแนนนักเรียน เชื่อมต่อข้อมูลสดจาก Google Sheets")
+st.title("🎓 Student Grade System (เวอร์ชันสำเร็จรูป)")
+st.info("ระบบนี้ดึงข้อมูลจาก Google Sheets ของ Teacher โดยอัตโนมัติ")
 
-# --- ส่วนของการเชื่อมต่อกับ Google Sheets ---
-st.header("1. เชื่อมต่อฐานข้อมูล (Connect to Database)")
-st.info("กรุณานำลิงก์ที่ได้จากการ 'Publish to web' (เป็น .csv) ของ Google Sheets มาวางในช่องด้านล่าง")
+# --- ส่วนที่แก้ไข: ฝังลิงก์ถาวรไว้ในโค้ดโดยตรง ---
+STUDENT_SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vStgwhz14o2i0lBP_Br158jQkBtLfA8bgp5HaEkvYfu6HHQAQG58QpD7aJkoQUEWG-dSJCWq9LVO24n/pub?gid=0&single=true&output=csv"
+SCORE_SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS8q-bDIaQDcms2q7zJky_bLBUFAllpEIxkG66rcKjMtPP1FPaGo01UCZy3mZ8k0U-BJKQu--Vn8z8o/pub?gid=0&single=true&output=csv"
 
-# สร้าง layout แบบ 2 คอลัมน์เพื่อความสวยงาม
-col1, col2 = st.columns(2)
-
-with col1:
-    student_sheet_url = st.text_input("ลิงก์ CSV ของไฟล์ student_master")
-
-with col2:
-    score_sheet_url = st.text_input("ลิงก์ CSV ของไฟล์ scores_master")
 
 # --- ฟังก์ชันสำหรับคำนวณเกรด ---
 def calculate_grade(score, max_score=100):
-    if max_score == 0: return 0.0 # ป้องกันการหารด้วยศูนย์
+    if max_score == 0: return 0.0
     percent_score = (score / max_score) * 100
     if percent_score >= 80: return 4.0
     if percent_score >= 75: return 3.5
@@ -38,66 +30,42 @@ def calculate_grade(score, max_score=100):
     if percent_score >= 50: return 1.0
     return 0.0
 
-
 # --- ส่วนของการประมวลผลและแสดงผล ---
-# จะเริ่มทำงานต่อเมื่อผู้ใช้วางลิงก์ครบทั้ง 2 ช่องแล้ว
-if student_sheet_url and score_sheet_url:
+try:
+    # อ่านข้อมูลจาก URL ที่เราฝังไว้โดยตรง
+    df_students = pd.read_csv(STUDENT_SHEET_URL)
+    df_scores = pd.read_csv(SCORE_SHEET_URL)
+    final_df = pd.merge(df_students, df_scores, on=['student_id', 'class_no'])
 
-    # ใช้ try-except เพื่อดักจับข้อผิดพลาดที่อาจเกิดขึ้น เช่น ลิงก์ผิด
-    try:
-        # อ่านข้อมูลจาก URL โดยตรง
-        df_students = pd.read_csv(student_sheet_url)
-        df_scores = pd.read_csv(score_sheet_url)
+    score_columns = [col for col in df_scores.columns if col not in ['class_no', 'student_id']]
+    subjects = sorted(list(set([col.split('_')[0] for col in score_columns])))
+    
+    # คำนวณคะแนนและเกรดสำหรับทุกวิชาที่ตรวจพบ
+    for subject in subjects:
+        total_col = f'{subject}_total'
+        grade_col = f'{subject}_grade'
+        subject_score_cols = [col for col in score_columns if col.startswith(subject)]
+        final_df[total_col] = final_df[subject_score_cols].sum(axis=1)
+        final_df[grade_col] = final_df[total_col].apply(lambda s: calculate_grade(s))
 
-        # --- รวมข้อมูล 2 ตาราง โดยใช้ 'student_id' และ 'class_no' เป็นตัวเชื่อม ---
-        final_df = pd.merge(df_students, df_scores, on=['student_id', 'class_no'])
+    st.header("✅ Dashboard: ภาพรวมข้อมูลนักเรียนและผลการเรียน")
+    st.dataframe(final_df)
 
-        # --- ส่วนคำนวณคะแนนและเกรด ---
-        # ตรวจจับรายวิชาทั้งหมดจากชื่อคอลัมน์โดยอัตโนมัติ
-        score_columns = [col for col in df_scores.columns if col not in ['class_no', 'student_id']]
-        subjects = sorted(list(set([col.split('_')[0] for col in score_columns])))
+    st.header("📊 การวิเคราะห์ข้อมูล")
+    selected_subject = st.selectbox("เลือกวิชาเพื่อดูการวิเคราะห์:", subjects)
+
+    if selected_subject:
+        total_col_selected = f'{selected_subject}_total'
+        grade_col_selected = f'{selected_subject}_grade'
+        kpi1, kpi2, kpi3 = st.columns(3)
+        kpi1.metric(f"คะแนนเฉลี่ย ({selected_subject})", f"{final_df[total_col_selected].mean():.2f}")
+        kpi2.metric(f"เกรดเฉลี่ย ({selected_subject})", f"{final_df[grade_col_selected].mean():.2f}")
+        kpi3.metric(f"คะแนนสูงสุด ({selected_subject})", f"{final_df[total_col_selected].max()}")
         
-        st.success(f"ตรวจพบ {len(subjects)} รายวิชาในไฟล์คะแนน: {', '.join(subjects)}")
-        
-        # คำนวณคะแนนและเกรดสำหรับทุกวิชาที่ตรวจพบ
-        for subject in subjects:
-            total_col = f'{subject}_total'
-            grade_col = f'{subject}_grade'
-            subject_score_cols = [col for col in score_columns if col.startswith(subject)]
-            
-            # คำนวณคะแนนรวม
-            final_df[total_col] = final_df[subject_score_cols].sum(axis=1)
-            # คำนวณเกรด (สมมติว่าคะแนนรวมทุกช่องย่อยคือ 100)
-            final_df[grade_col] = final_df[total_col].apply(lambda score: calculate_grade(score, max_score=100))
+        st.subheader(f"กราฟแสดงการกระจายของเกรดวิชา: {selected_subject}")
+        grade_distribution = final_df[grade_col_selected].value_counts().sort_index()
+        st.bar_chart(grade_distribution)
 
-
-        # --- ส่วนแสดงผลแดชบอร์ด ---
-        st.header("✅ Dashboard: ภาพรวมข้อมูลนักเรียนและผลการเรียน")
-        st.dataframe(final_df)
-        st.success("ข้อมูลทั้งหมดเชื่อมต่อและอัปเดตล่าสุดจาก Google Sheets เรียบร้อยแล้ว!")
-
-        # --- การวิเคราะห์ข้อมูล ---
-        st.header("📊 การวิเคราะห์ข้อมูล")
-        selected_subject = st.selectbox("เลือกวิชาเพื่อดูการวิเคราะห์:", subjects)
-
-        if selected_subject:
-            total_col_selected = f'{selected_subject}_total'
-            grade_col_selected = f'{selected_subject}_grade'
-
-            # สร้าง layout แบบ 3 คอลัมน์สำหรับแสดงข้อมูลสรุป
-            kpi1, kpi2, kpi3 = st.columns(3)
-            kpi1.metric(f"คะแนนเฉลี่ย ({selected_subject})", f"{final_df[total_col_selected].mean():.2f}")
-            kpi2.metric(f"เกรดเฉลี่ย ({selected_subject})", f"{final_df[grade_col_selected].mean():.2f}")
-            kpi3.metric(f"คะแนนสูงสุด ({selected_subject})", f"{final_df[total_col_selected].max()}")
-
-            # สร้างกราฟเปรียบเทียบคะแนน
-            st.subheader(f"กราฟแสดงการกระจายของเกรดวิชา: {selected_subject}")
-            grade_distribution = final_df[grade_col_selected].value_counts().sort_index()
-            st.bar_chart(grade_distribution)
-
-
-    except Exception as e:
-        st.error(f"เกิดข้อผิดพลาดในการดึงหรือประมวลผลข้อมูล: {e}")
-        st.warning("กรุณาตรวจสอบว่าลิงก์ถูกต้อง และเป็นลิงก์ที่ได้จากการ 'Publish to web' เป็นไฟล์ CSV")
-else:
-    st.warning("กรุณาวางลิงก์ข้อมูลจาก Google Sheets ทั้ง 2 ไฟล์เพื่อเริ่มต้นใช้งานระบบ")
+except Exception as e:
+    st.error(f"เกิดข้อผิดพลาดในการดึงข้อมูล: {e}")
+    st.warning("กรุณาตรวจสอบว่าลิงก์ในโค้ดถูกต้อง และไฟล์ Google Sheets ได้รับการ 'Publish to web' แล้ว")
