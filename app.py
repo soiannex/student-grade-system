@@ -1,71 +1,108 @@
 import streamlit as st
 import pandas as pd
+from streamlit_gsheets.connection import GSheetsConnection
 
-# --- การตั้งค่าหน้าเว็บหลัก ---
-st.set_page_config(
-    page_title="Student Grade System",
-    page_icon="🎓",
-    layout="wide"
+# --- การตั้งค่าหน้าเว็บ ---
+st.set_page_config(page_title="Student Grade System", page_icon="📝", layout="wide")
+st.title("📝 Student Grade System (เวอร์ชันจัดการข้อมูล)")
+
+# --- การเชื่อมต่อฐานข้อมูล ---
+# พยายามเชื่อมต่อกับ Google Sheets โดยใช้กุญแจจาก Secrets
+try:
+    conn = st.connection("gcs", type=GSheetsConnection)
+except Exception as e:
+    st.error("ไม่สามารถเชื่อมต่อกับ Google Sheets ได้ กรุณาตรวจสอบการตั้งค่า Secrets")
+    st.error(f"Error: {e}")
+    st.stop() # หยุดการทำงานของแอปถ้าเชื่อมต่อไม่ได้
+
+# --- ฟังก์ชันสำหรับโหลดข้อมูล (พร้อม Cache) ---
+@st.cache_data(ttl=60) # เก็บข้อมูลใน Cache เป็นเวลา 60 วินาที เพื่อไม่ให้โหลดข้อมูลบ่อยเกินไป
+def load_data(worksheet_name):
+    try:
+        df = conn.read(worksheet=worksheet_name, usecols=list(range(30)), ttl=5)
+        df = df.dropna(how="all")
+        return df
+    except Exception as e:
+        st.error(f"ไม่สามารถโหลดข้อมูลจาก Worksheet '{worksheet_name}' ได้")
+        st.info("กรุณาตรวจสอบว่าชื่อ Worksheet ใน Google Sheets ของท่านถูกต้อง")
+        return pd.DataFrame() # คืนค่า DataFrame ว่างเปล่าถ้าเกิดข้อผิดพลาด
+
+# --- โหลดข้อมูลเริ่มต้น ---
+students_df = load_data("student_master")
+scores_df = load_data("scores_master")
+
+# ตรวจสอบว่าโหลดข้อมูลสำเร็จหรือไม่
+if students_df.empty:
+    st.error("ไม่สามารถแสดงผลได้เนื่องจากข้อมูลนักเรียนว่างเปล่า")
+    st.stop()
+
+# --- ฟอร์มสำหรับเพิ่มนักเรียนใหม่ ---
+with st.expander("📝 **คลิกที่นี่เพื่อเพิ่มนักเรียนใหม่**"):
+    with st.form(key="add_student_form", clear_on_submit=True):
+        st.write("กรอกข้อมูลนักเรียนใหม่")
+        col1, col2, col3, col4 = st.columns([1, 2, 2, 2])
+        with col1:
+            new_class_no = st.number_input("เลขที่", min_value=1, step=1, format="%d")
+        with col2:
+            new_student_id = st.number_input("เลขประจำตัว", min_value=1000, step=1, format="%d")
+        with col3:
+            new_title = st.selectbox("คำนำหน้าชื่อ", ["เด็กชาย", "เด็กหญิง"])
+        with col4:
+            new_first_name = st.text_input("ชื่อจริง")
+            new_last_name = st.text_input("นามสกุล")
+
+        submit_button = st.form_submit_button(label="✔️ บันทึกนักเรียนใหม่")
+
+        if submit_button:
+            if new_first_name and new_last_name and new_student_id > 0:
+                new_student_data = pd.DataFrame([{
+                    "class_no": new_class_no, "student_id": new_student_id, "title": new_title,
+                    "first_name": new_first_name, "last_name": new_last_name, "class": "ป.1/1", "status": "ปกติ"
+                }])
+                
+                score_columns = {col: 0 for col in scores_df.columns if col not in ['class_no', 'student_id']}
+                new_score_data = pd.DataFrame([{"class_no": new_class_no, "student_id": new_student_id, **score_columns}])
+                
+                # อัปเดตข้อมูลใน Google Sheets
+                conn.update(worksheet="student_master", data=pd.concat([students_df, new_student_data], ignore_index=True))
+                conn.update(works_sheet="scores_master", data=pd.concat([scores_df, new_score_data], ignore_index=True))
+
+                st.success(f"บันทึกข้อมูลนักเรียนใหม่: {new_title} {new_first_name} เรียบร้อยแล้ว!")
+                st.cache_data.clear()
+            else:
+                st.warning("กรุณากรอกข้อมูลให้ครบถ้วน")
+
+# --- ส่วนของการแสดงผลและลบข้อมูล ---
+st.header("ตารางข้อมูลนักเรียนทั้งหมด")
+
+# เพิ่มคอลัมน์ "delete" สำหรับสร้างปุ่มลบ
+students_df_display = students_df.copy()
+students_df_display["ลบ"] = [False] * len(students_df_display)
+
+# จัดเรียงคอลัมน์ใหม่เพื่อความสวยงาม
+cols_to_display = ["ลบ", "class_no", "student_id", "title", "first_name", "last_name", "class", "status"]
+edited_df = st.data_editor(
+    students_df_display[cols_to_display],
+    column_config={"ลบ": st.column_config.CheckboxColumn("ต้องการลบ?")},
+    disabled=students_df_display.columns.difference(['ลบ']),
+    hide_index=True,
 )
 
-# --- ส่วนหัวของแอปพลิเคชัน ---
-st.title("🎓 Student Grade System (เวอร์ชันสำเร็จรูป)")
-st.info("ระบบนี้ดึงข้อมูลจาก Google Sheets ของ Teacher โดยอัตโนมัติ")
-
-# --- ส่วนที่แก้ไข: ฝังลิงก์ถาวรไว้ในโค้ดโดยตรง ---
-STUDENT_SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vStgwhz14o2i0lBP_Br158jQkBtLfA8bgp5HaEkvYfu6HHQAQG58QpD7aJkoQUEWG-dSJCWq9LVO24n/pub?gid=0&single=true&output=csv"
-SCORE_SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS8q-bDIaQDcms2q7zJky_bLBUFAllpEIxkG66rcKjMtPP1FPaGo01UCZy3mZ8k0U-BJKQu--Vn8z8o/pub?gid=0&single=true&output=csv"
-
-
-# --- ฟังก์ชันสำหรับคำนวณเกรด ---
-def calculate_grade(score, max_score=100):
-    if max_score == 0: return 0.0
-    percent_score = (score / max_score) * 100
-    if percent_score >= 80: return 4.0
-    if percent_score >= 75: return 3.5
-    if percent_score >= 70: return 3.0
-    if percent_score >= 65: return 2.5
-    if percent_score >= 60: return 2.0
-    if percent_score >= 55: return 1.5
-    if percent_score >= 50: return 1.0
-    return 0.0
-
-# --- ส่วนของการประมวลผลและแสดงผล ---
-try:
-    # อ่านข้อมูลจาก URL ที่เราฝังไว้โดยตรง
-    df_students = pd.read_csv(STUDENT_SHEET_URL)
-    df_scores = pd.read_csv(SCORE_SHEET_URL)
-    final_df = pd.merge(df_students, df_scores, on=['student_id', 'class_no'])
-
-    score_columns = [col for col in df_scores.columns if col not in ['class_no', 'student_id']]
-    subjects = sorted(list(set([col.split('_')[0] for col in score_columns])))
+# หาแถวที่ถูกติ๊กว่าต้องการลบ
+rows_to_delete = edited_df[edited_df["ลบ"]]
+if not rows_to_delete.empty:
+    st.warning("คุณต้องการลบข้อมูลนักเรียนต่อไปนี้ใช่หรือไม่?")
+    st.dataframe(rows_to_delete[['class_no', 'student_id', 'first_name', 'last_name']])
     
-    # คำนวณคะแนนและเกรดสำหรับทุกวิชาที่ตรวจพบ
-    for subject in subjects:
-        total_col = f'{subject}_total'
-        grade_col = f'{subject}_grade'
-        subject_score_cols = [col for col in score_columns if col.startswith(subject)]
-        final_df[total_col] = final_df[subject_score_cols].sum(axis=1)
-        final_df[grade_col] = final_df[total_col].apply(lambda s: calculate_grade(s))
+    if st.button("ยืนยันการลบข้อมูล"):
+        # กรองข้อมูลเก่าเอาแถวที่ต้องการลบออก
+        students_df_updated = students_df[~students_df["student_id"].isin(rows_to_delete["student_id"])]
+        scores_df_updated = scores_df[~scores_df["student_id"].isin(rows_to_delete["student_id"])]
 
-    st.header("✅ Dashboard: ภาพรวมข้อมูลนักเรียนและผลการเรียน")
-    st.dataframe(final_df)
+        # อัปเดตข้อมูลใหม่ลงใน Google Sheets
+        conn.update(worksheet="student_master", data=students_df_updated)
+        conn.update(worksheet="scores_master", data=scores_df_updated)
 
-    st.header("📊 การวิเคราะห์ข้อมูล")
-    selected_subject = st.selectbox("เลือกวิชาเพื่อดูการวิเคราะห์:", subjects)
-
-    if selected_subject:
-        total_col_selected = f'{selected_subject}_total'
-        grade_col_selected = f'{selected_subject}_grade'
-        kpi1, kpi2, kpi3 = st.columns(3)
-        kpi1.metric(f"คะแนนเฉลี่ย ({selected_subject})", f"{final_df[total_col_selected].mean():.2f}")
-        kpi2.metric(f"เกรดเฉลี่ย ({selected_subject})", f"{final_df[grade_col_selected].mean():.2f}")
-        kpi3.metric(f"คะแนนสูงสุด ({selected_subject})", f"{final_df[total_col_selected].max()}")
-        
-        st.subheader(f"กราฟแสดงการกระจายของเกรดวิชา: {selected_subject}")
-        grade_distribution = final_df[grade_col_selected].value_counts().sort_index()
-        st.bar_chart(grade_distribution)
-
-except Exception as e:
-    st.error(f"เกิดข้อผิดพลาดในการดึงข้อมูล: {e}")
-    st.warning("กรุณาตรวจสอบว่าลิงก์ในโค้ดถูกต้อง และไฟล์ Google Sheets ได้รับการ 'Publish to web' แล้ว")
+        st.success("ลบข้อมูลสำเร็จ!")
+        st.cache_data.clear()
+        st.experimental_rerun()
